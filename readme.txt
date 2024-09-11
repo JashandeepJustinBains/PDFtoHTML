@@ -1,0 +1,1 @@
+Converts a PDF to an HTML document, should eventually color the background and text correctly. Might also want to make the input allowed to be an image file or PDF.
