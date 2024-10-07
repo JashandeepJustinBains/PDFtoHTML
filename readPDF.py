@@ -7,6 +7,8 @@ from tkinter import filedialog
 from tkinter import messagebox
 import threading
 import json
+import cv2
+import numpy as np
 
 class TTSReader:
     def __init__(self):
@@ -76,7 +78,11 @@ def read_from_cursor():
     tts_reader = TTSReader()
     cursor_index = ocr_text.index(tk.INSERT)
     text = ocr_text.get(cursor_index, tk.END)
-    tts_reader.start_reading(text, doc.load_page(current_page))
+    if doc:
+        tts_reader.start_reading(text, doc.load_page(current_page))
+    else:
+        print(f"please chose a document")
+
 
 def stop_tts():
     global tts_reader
@@ -120,10 +126,85 @@ def display_page(page_num):
     page_entry.insert(0, str(current_page + 1))
     total_pages_label.config(text=f"of {len(doc)}")
 
-# Function to open and process PDF
-def open_pdf():
+
+
+
+def open_image(file_path):
+    global current_page, tts_reader, original_img, processed_img, display_original
+    if tts_reader is not None:
+        tts_reader.stop_reading()
+        tts_reader = None
+
+    img = Image.open(file_path)
+    original_img = img.resize((800, int(800 * img.height / img.width)), Image.LANCZOS)  # Resize while maintaining aspect ratio
+    img_tk = ImageTk.PhotoImage(original_img)
+
+    # Display the original image in the GUI
+    pdf_label.config(image=img_tk)
+    pdf_label.image = img_tk
+
+    # Convert the image to grayscale
+    img_cv = cv2.cvtColor(np.array(original_img), cv2.COLOR_RGB2GRAY)
+
+    # Deskew the image gently
+    coords = np.column_stack(np.where(img_cv > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    (h, w) = img_cv.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    img_cv = cv2.warpAffine(img_cv, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+    # Apply adaptive thresholding
+    img_thresh = cv2.adaptiveThreshold(img_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+
+    # Apply a gentle sharpening filter
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    img_sharp = cv2.filter2D(img_thresh, -1, kernel)
+
+    # Convert back to PIL image
+    processed_img = Image.fromarray(cv2.cvtColor(img_sharp, cv2.COLOR_GRAY2RGB))
+
+    # Perform OCR on the preprocessed image
+    text = pytesseract.image_to_string(img_sharp)
+    if text:
+        ocr_text.delete(1.0, tk.END)
+        ocr_text.insert(tk.END, text)
+    else:
+        ocr_text.delete(1.0, tk.END)
+        ocr_text.insert(tk.END, "No text found in the image.")
+
+    # Update current page number
+    current_page = 0
+    page_entry.delete(0, tk.END)
+    page_entry.insert(0, str(current_page + 1))
+    total_pages_label.config(text="of 1")
+
+    display_original = True  # Start by displaying the original image
+
+
+
+
+def toggle_image():
+    global display_original
+    if display_original:
+        img_tk = ImageTk.PhotoImage(processed_img)
+        pdf_label.config(image=img_tk)
+        pdf_label.image = img_tk
+        display_original = False
+    else:
+        img_tk = ImageTk.PhotoImage(original_img)
+        pdf_label.config(image=img_tk)
+        pdf_label.image = img_tk
+        display_original = True
+
+
+def open_file():
     global doc, current_page, file_path, tts_reader
-    file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
+    file_path = filedialog.askopenfilename(filetypes=[("PDF and Image files", "*.pdf;*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("PDF files", "*.pdf"), ("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif")])
     if not file_path:
         return
 
@@ -131,10 +212,15 @@ def open_pdf():
         tts_reader.stop_reading()
         tts_reader = None
 
-    doc = fitz.open(file_path)
-    current_page = 0
-    display_page(current_page)
-    save_state()  # Save the state after opening the PDF
+    if file_path.lower().endswith('.pdf'):
+        doc = fitz.open(file_path)
+        current_page = 0
+        display_page(current_page)
+    else:
+        open_image(file_path)
+
+    save_state()  # Save the state after opening the file
+
 
 # Function to go to the previous page
 def prev_page():
@@ -261,7 +347,7 @@ def setup_gui():
     global root, button_frame, open_button, start_button, stop_button, prev_button, next_button
     global page_label, page_entry, go_button, total_pages_label, speed_label, speed_scale
     global volume_label, volume_scale, tts_indicator, bookmark_button, pdf_frame, pdf_label
-    global ocr_text, bookmarks_listbox
+    global ocr_text, bookmarks_listbox, toggle_button
 
     root = tk.Tk()
     root.title("Interactive PDF Reader")
@@ -271,7 +357,7 @@ def setup_gui():
     button_frame = tk.Frame(root)
     button_frame.grid(row=0, column=0, columnspan=3, pady=5)
 
-    open_button = tk.Button(button_frame, text="Open PDF", command=open_pdf)
+    open_button = tk.Button(button_frame, text="Open PDF", command=open_file)
     open_button.grid(row=0, column=0, padx=5)
 
     start_button = tk.Button(button_frame, text="Start Reading", command=read_from_cursor)
@@ -318,6 +404,9 @@ def setup_gui():
     bookmark_button = tk.Button(button_frame, text="Add Bookmark", command=add_bookmark)
     bookmark_button.grid(row=0, column=14, padx=5)
 
+    toggle_button = tk.Button(button_frame, text="Toggle Image", command=toggle_image)
+    toggle_button.grid(row=0, column=15, padx=5)
+
     pdf_frame = tk.Frame(root)
     pdf_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
@@ -345,8 +434,9 @@ def setup_gui():
 
     root.mainloop()
 
+
+
 def main():
     setup_gui()
-
 if __name__ == "__main__":
     main()
